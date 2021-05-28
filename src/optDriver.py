@@ -53,7 +53,7 @@ def gridSearch(x0, X , N=10, niter=20, R=4):
         xtry = getSimilarData(x, X, R, N)
         # Evaluate function
         ftry = energyFunction(xtry)
-
+        #
         # Find if we improve
         jmin = torch.argmin(ftry)
         #print(jmin, f[jmin])
