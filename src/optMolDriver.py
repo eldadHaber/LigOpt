@@ -7,13 +7,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 import math
 import torch.autograd.profiler as profiler
+from rdkit import Chem
 
 # load the data
-YX = torch.load('/Users/eldadhaber/Dropbox/ComputationalBio/Data/rdk/dataset_rdkit.pt')
-
-
-Y = YX[:,0]
-X = YX[:,1:]
+#YX = torch.load('/Users/eldadhaber/Dropbox/ComputationalBio/Data/rdk/dataset_rdkit.pt')
+#Y = YX[:,0]
+#X = YX[:,1:]
 
 import os, sys
 import torch
@@ -26,77 +25,81 @@ import math
 import torch.autograd.profiler as profiler
 
 # load the data
-YX = torch.load('/Users/eldadhaber/Dropbox/ComputationalBio/Data/rdk/dataset_rdkit.pt')
+#YX = torch.load('/Users/eldadhaber/Dropbox/ComputationalBio/Data/rdk/dataset_rdkit.pt')
+E = torch.load('/Users/eldadhaber/Dropbox/ComputationalBio/Data/rdk/energies.pt')
+X = torch.load('/Users/eldadhaber/Dropbox/ComputationalBio/Data/rdk/finger_prints_1024.pt')
+s = X.sum(dim=1)
 
-Y = YX[:, 0]
-X = YX[:, 1:]
-
-
-def indexData(X, numnei=32):
-    ##
-    d = torch.pow(X, 2).sum(dim=1, keepdim=True)
-    D = torch.relu(d + d.t() - 2 * X @ X.t())
-    sigma = torch.std(D)
-    D = torch.exp(-D / sigma ** 2)
-    ###
-    vals, indices = torch.topk(D, k=numnei, dim=1)
-    nd = D.shape[0]
-    I = torch.ger(torch.arange(nd), torch.ones(numnei, dtype=torch.long))
-    I = I.view(-1)
-    J = indices.view(-1).type(torch.LongTensor)
-    IJ = torch.stack([I, J], dim=1)
-    one = torch.ones(IJ.shape[0])
-
-    A = torch.sparse_coo_tensor(IJ.t(), one, (D.shape[0], D.shape[1]))
-    return A
-
-
-def getNfarNeighbours(ind, A, X, k, nout):
-    n = A.shape[0]
-    x = torch.zeros(n)
-    x[ind] = 1
-    ij = x.squeeze().nonzero(as_tuple=True)[0]
-    for i in range(k):
-        x = torch.mv(A, x)
-        ijIter = x.squeeze().nonzero(as_tuple=True)[0]
-        ij     = torch.cat((ij, ijIter))
-
-    uniques, counts = ij.unique(return_counts=True)
-
-    c, inds = torch.sort(counts)
-    Xout = X[uniques[inds[:nout]],:]
-
-    return Xout, uniques[inds[:nout]]
+#U,S,V = torch.svd(X)
+#X = U*(1/S)
 
 
 
-#A = indexData(X, numnei=32)
+#Y = YX[:, 0]
+#X = YX[:, 1:]
 
-def getSimilarData(ind,X,R,N):
+
+
+def getSimilarDataBin(ind,X,s,R,N):
+
+    x = X[ind,:].t()
+    r = (X@x)/s
+    d = -torch.abs(r-R)
+    vals, indices = torch.topk(d, k=2*N, dim=0)
+    ii = torch.randperm(2*N)
+    vals = vals[ii[:N]]
+    indices = indices[ii[:N]]
+
+
+    return indices
+
+
+def getSimilarData(ind,X,s,R=128,N=64):
 
     x = X[ind,:]
-    r = torch.pow(X - x,2).sum(dim=1)
+    #r = torch.pow(X - x,2).sum(dim=1)
+    r = torch.abs(X - x).sum(dim=1)
+
     d = -torch.abs(r-R)
-    vals, indices = torch.topk(d, k=N, dim=0)
+    vals, indices = torch.topk(d, k=2*N, dim=0)
+    ii = torch.randperm(2*N)
+    vals = vals[ii[:N]]
+    indices = indices[ii[:N]]
 
-    xout = X[indices,:]
+    return indices
 
-    return xout, indices
+def getSimilarDataTanimoto(ind,X,s,R,N):
+
+    x = X[ind,:].t()
+    dp = X@x
+    nz = torch.sum((X+x)>0,dim=1)
+    T  = dp/nz
+    d = -torch.abs(T-R)
+    vals, indices = torch.topk(d, k=2*N, dim=0)
+    ii = torch.randperm(2*N)
+    vals = vals[ii[:N]]
+    indices = indices[ii[:N]]
 
 
-def gridSearch(ind0, YX, N=10, niter=20, R=64):
+    return indices
+
+
+def gridSearch(ind0, X, s, E,  N=10, niter=20, R=128):
 
     ind = ind0
-    yx = YX[ind,:]
-    f = yx[0]
+    f = E[ind]
+    print(0, f.item())
+    f = f[0]
+    IND = torch.tensor([ind])
     hist = torch.zeros(niter,2)
     for i in range(niter):
         # Sample points
-        #_, inds = getNfarNeighbours(ind, A, X, k, N)
-        _, inds = getSimilarData(ind, X, R, N)
+        #inds = getSimilarDataBin(ind, X, s, R, N)
+        inds = getSimilarData(ind, X, s, R, N)
+        #inds = getSimilarDataTanimoto(ind, X, s, R, N)
+        IND = torch.cat((IND,inds),dim=0)
         # Evaluate function
-        YXtry = YX[inds,:]
-        ftry = YXtry[:,0]
+        ftry = E[inds]
         #
         # Find if we improve
         jmin = torch.argmin(ftry)
@@ -111,10 +114,25 @@ def gridSearch(ind0, YX, N=10, niter=20, R=64):
         hist[i,0] = f
         hist[i,1] = R
         if R < 8:
-            return ind, f, hist
+            print('Total function evaluations ', N * i)
+            return ind, f, hist, IND
 
-    return ind, f, hist
+    print('Total function evaluations ', N * niter)
+    return ind, f, hist, IND
 
 
-ind0 = 19237 #torch.randint(YX.shape[0],(1,)).item()
-ind, d, hist = gridSearch(ind0, YX, N=64, niter=250, R=128)
+ind0 = torch.randint(X.shape[0],(1,)).item() # The maximal index 19237 #
+N = 64
+niter = 250
+ind, d, hist, IND = gridSearch(ind0, X, s, E, N=N, niter=niter, R=128)
+
+# Compare to random sumpling
+ii = torch.randint(49184,(len(IND),))
+nbins = 64
+x = torch.linspace(E[ii,0].min(),E[ii].max(),nbins)
+h = torch.histc(E[ii,0], bins=nbins, min=E[ii,0].min(), max=E[ii,0].max())
+plt.plot(x,h,'.-r')
+x = torch.linspace(E[IND,0].min(),E[IND,0].max(),nbins)
+h = torch.histc(E[IND,0], bins=nbins, min=E[IND,0].min(), max=E[IND,0].max())
+plt.plot(x,h,'.-b')
+
